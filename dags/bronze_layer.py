@@ -23,10 +23,9 @@ def fetch_news_with_pagination(**context):
     conn = BaseHook.get_connection(DB_CONN_ID)
     db_uri = conn.get_uri().replace("postgres://", "postgresql://", 1)
 
-    # get a range of the last 10 days
-    # TODO: need to find a way to automatically get the last 10 days
-    start_dt = datetime(2026, 1, 14)
+    # get a range of the last 3 days relative to today
     end_dt = datetime.now()
+    start_dt = end_dt - timedelta(days=3)
     date_list = [(start_dt + timedelta(days=x)).strftime('%Y-%m-%d') 
                  for x in range((end_dt - start_dt).days + 1)]
 
@@ -84,8 +83,6 @@ def fetch_news_with_pagination(**context):
             except:
                 full_text = "Could not retrieve content"
 
-            # TODO: ensure that table created has primary key
-
             # appending article data in json format
             all_articles.append({
                 'article_id': article_id,
@@ -114,21 +111,37 @@ def fetch_news_with_pagination(**context):
         
         # conencting to db
         engine = create_engine(db_uri)
-        
-        # loading data into temporary staging table
-        df.to_sql('stg_news_articles', engine, if_exists='replace', index=False)
-        
-        # moving data into main news_articles table ignoring duplicates
-        upsert_query = text("""
-            INSERT INTO news_articles 
-            SELECT * FROM stg_news_articles
-            ON CONFLICT (article_id) DO NOTHING;
+
+        # ensures that original table is created with a primary key
+        setup_query = text("""
+            CREATE TABLE IF NOT EXISTS news_articles (
+                article_id VARCHAR(16) PRIMARY KEY,
+                source_name TEXT,
+                author TEXT,
+                title TEXT,
+                url TEXT,
+                full_content TEXT,
+                published_at TIMESTAMP,
+                content_snippet TEXT,
+                extracted_at TIMESTAMP
+            );
         """)
-        
-        # executing the query
+
         with engine.begin() as conn:
+            conn.execute(setup_query)
+        
+            # loading data into temporary staging table
+            df.to_sql('stg_news_articles', engine, if_exists='replace', index=False, method='multi', chunksize=100)
+        
+            # moving data into main news_articles table ignoring duplicates
+            upsert_query = text("""
+                INSERT INTO news_articles 
+                SELECT * FROM stg_news_articles
+                ON CONFLICT (article_id) DO NOTHING;
+            """)
+
             conn.execute(upsert_query)
-            
+
             # dropping the staging table
             conn.execute(text("DROP TABLE stg_news_articles;"))
             
