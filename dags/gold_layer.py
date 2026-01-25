@@ -32,7 +32,7 @@ def run_spacy_extraction():
 
     # high-speed batch processing
     # as_tuples=True lets us pass (text, context) and get (doc, context) back
-    for i, (doc, article_id) in enumerate(nlp.pipe(zip(texts, article_ids), as_tuples=True, batch_size=20), disable=["tok2vec", "tagger", "parser", "attribute_ruler", "lemmatizer"]):
+    for i, (doc, article_id) in enumerate(nlp.pipe(zip(texts, article_ids), as_tuples=True, batch_size=20, disable=["tok2vec", "tagger", "parser", "attribute_ruler", "lemmatizer"])):
         
         for ent in doc.ents:
             if ent.label_ in ["ORG", "PERSON", "GPE"]:
