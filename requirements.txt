@@ -3,9 +3,9 @@ pyspark
 apache-airflow-providers-postgres
 newspaper4k
 lxml_html_clean
-spacy
+spacy>=3.7.0
 pandas
 sqlalchemy
 requests
 psycopg2-binary
-
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
