@@ -47,20 +47,44 @@ def run_spacy_extraction():
             percent = round(((i + 1) / total_articles) * 100, 2)
             print(f"Progress: {i + 1}/{total_articles} articles processed ({percent}%).")
 
-    # 4. Save to database
+    # saving to the database step with logging
     if all_entities:
+        print(f"Extraction complete. Found {len(all_entities)} entities. Preparing database upload...")
         gold_df = pd.DataFrame(all_entities)
-        with engine.begin() as connection:
-            connection.execute(text("""
-                CREATE TABLE IF NOT EXISTS news_entities_gold (
-                    article_id VARCHAR(16),
-                    entity_text TEXT,
-                    entity_label TEXT
-                );
-                TRUNCATE TABLE news_entities_gold;
-            """))
-            # using method='multi' 
-            gold_df.to_sql('news_entities_gold', engine, if_exists='append', index=False, method='multi', chunksize=100)
+        
+        try:
+            with engine.connect() as connection:
+                # wrapping everything in a transaction
+                with connection.begin():
+                    print("Checking/Creating table schema...")
+                    connection.execute(text("""
+                        CREATE TABLE IF NOT EXISTS news_entities_gold (
+                            article_id VARCHAR(16),
+                            entity_text TEXT,
+                            entity_label TEXT
+                        );
+                    """))
+                    
+                    print("Clearing old entities (Truncating)...")
+                    connection.execute(text("TRUNCATE TABLE news_entities_gold;"))
+                    
+                    print(f"Uploading {len(gold_df)} rows to news_entities_gold...")
+                    # We pass the connection (which is in a transaction) to to_sql
+                    gold_df.to_sql(
+                        'news_entities_gold', 
+                        connection, 
+                        if_exists='append', 
+                        index=False, 
+                        method='multi', 
+                        chunksize=500
+                    )
+                
+                print("Database upload successful and committed.")
+                
+        except Exception as e:
+            print(f"Error during database write: {e}")
+            raise
+
 
     print(f"Extraction complete. Found {len(all_entities)} entities.")
 
