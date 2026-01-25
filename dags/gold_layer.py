@@ -4,7 +4,7 @@ import spacy
 from sqlalchemy import create_engine, text
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.sdk.bases.hook.BaseHook import BaseHook
+from airflow.hooks.base import BaseHook
 from datetime import datetime
 
 # function for staCy implementation
