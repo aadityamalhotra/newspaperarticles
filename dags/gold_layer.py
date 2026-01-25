@@ -32,14 +32,23 @@ def run_spacy_extraction():
 
     # high-speed batch processing
     # as_tuples=True lets us pass (text, context) and get (doc, context) back
-    for i, (doc, article_id) in enumerate(nlp.pipe(zip(texts, article_ids), as_tuples=True, batch_size=20, disable=["tok2vec", "tagger", "parser", "attribute_ruler", "lemmatizer"])):
+    for i, (doc, article_id) in enumerate(nlp.pipe(zip(texts, article_ids), as_tuples=True, batch_size=20, disable=["tok2vec", "tagger", "attribute_ruler", "lemmatizer"])):
         
         for ent in doc.ents:
             if ent.label_ in ["ORG", "PERSON", "GPE"]:
+
+                descriptors = []
+                # Look at the head of the entity and its neighbors
+                for token in ent:
+                    for child in token.children:
+                        if child.pos_ == "ADJ":
+                            descriptors.append(child.text.lower())
+
                 all_entities.append({
                     "article_id": article_id,
                     "entity_text": ent.text,
-                    "entity_label": ent.label_
+                    "entity_label": ent.label_,
+                    "associated_words": ", ".join(descriptors) if descriptors else None
                 })
         
         # Progress Heartbeat: Log every 20 articles
@@ -61,7 +70,8 @@ def run_spacy_extraction():
                         CREATE TABLE IF NOT EXISTS news_entities_gold (
                             article_id VARCHAR(16),
                             entity_text TEXT,
-                            entity_label TEXT
+                            entity_label TEXT,
+                            associated_words TEXT
                         );
                     """))
                     
