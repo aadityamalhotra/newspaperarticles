@@ -5,6 +5,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.sdk.bases.hook import BaseHook
 from datetime import datetime
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 
 # function that handles silver layer processing
 def prepare_silver_tables():
@@ -31,14 +32,12 @@ def prepare_silver_tables():
             WHERE title NOT SIMILAR TO '[0-9]%'
         """), connection)
 
-        # --- STAGING LOAD ---
-        # We load into temporary tables first
+        # We load into temporary staging tables first
         content_df.to_sql('stg_news_content', engine, if_exists='replace', index=False, method='multi', chunksize=100)
         brief_df.to_sql('stg_news_brief', engine, if_exists='replace', index=False, method='multi', chunksize=100)
 
-        # --- ATOMIC SWAP ---
+
         # We drop the old ones and rename the staging ones to live.
-        # This takes milliseconds and ensures zero "downtime" for your tables.
         swap_query = text("""
             DROP TABLE IF EXISTS news_content;
             ALTER TABLE stg_news_content RENAME TO news_content;
@@ -49,6 +48,7 @@ def prepare_silver_tables():
             ALTER TABLE news_brief ADD PRIMARY KEY (article_id);
         """)
         
+        # execute the query
         connection.execute(swap_query)
 
     print(f"Silver Tables swapped successfully. Content: {len(content_df)}, Brief: {len(brief_df)}")
@@ -66,3 +66,12 @@ with DAG(
         task_id='create_silver_layer',
         python_callable=prepare_silver_tables
     )
+
+    # call the golden layer dag
+    trigger_gold = TriggerDagRunOperator(
+        task_id='trigger_gold_nlp',
+        trigger_dag_id='news_nlp_gold_v1', # This must match the Gold DAG ID
+        wait_for_completion=False
+    )
+
+    refine_data >> trigger_gold
