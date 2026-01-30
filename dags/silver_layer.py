@@ -58,7 +58,7 @@ def prepare_silver_tables():
 with DAG(
     dag_id='data_refinery_v1',
     start_date=datetime(2026, 1, 1),
-    schedule='@daily',
+    schedule=None,
     catchup=False
 ) as dag:
     
