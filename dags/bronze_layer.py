@@ -1,118 +1,166 @@
-# importing necessary libraries
 import requests
 import pandas as pd
+import hashlib
+import urllib.parse
+import time
+from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.sdk import Variable
 from airflow.sdk.bases.hook import BaseHook
-from datetime import datetime, timedelta
 from newspaper import Article, Config
-import hashlib
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 
-# specifications
+# --- CONFIGURATION ---
 DB_CONN_ID = 'my_postgres_conn'
-SOURCES = "bbc-news"
 
-# function that loads and stores data
-def fetch_news_with_pagination(**context):
+# MAPPING: Country Code -> Search Query
+# We use explicit country names to search the 'everything' endpoint
+# This guarantees data even if the 'top-headlines' feed for that region is empty.
+COUNTRY_QUERIES = {
+    'cn': 'China',
+    'ru': 'Russia',
+    'in': 'India',
+    'gb': 'United Kingdom',
+    'de': 'Germany',
+    'fr': 'France',
+    'jp': 'Japan',
+    'sa': 'Saudi Arabia',
+    'ua': 'Ukraine',
+    'il': 'Israel'
+}
 
-    # api connection, database connection
+def fetch_stratified_news(**context):
+    """
+    Fetches news using a Robust Strategy:
+    1. Global Headlines (The "Front Page" of the world)
+    2. Global Business (Economic shifts)
+    3. Country Deep-Dives (Using 'everything' endpoint to guarantee coverage)
+    """
+    
     api_key = Variable.get("newsroom_api_key")
     conn = BaseHook.get_connection(DB_CONN_ID)
     db_uri = conn.get_uri().replace("postgres://", "postgresql://", 1)
-
-    # get a range of the last 3 days relative to today
-    end_dt = datetime.now()
-    start_dt = end_dt - timedelta(days=3)
-    date_list = [(start_dt + timedelta(days=x)).strftime('%Y-%m-%d') 
-                 for x in range((end_dt - start_dt).days + 1)]
-
-    # list to store all articles
-    all_articles = []
-
-    # scraper configuration
+    
+    # Newspaper3k Config
     user_config = Config()
     user_config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
     user_config.request_timeout = 10
+    
+    # Calculate Date Range (Last 48 hours to keep it relevant)
+    from_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
+    
+    fetch_targets = []
+    
+    # --- BUCKET 1: Global Headlines (High Quality, Low Volume) ---
+    categories = ['general', 'business', 'technology']
+    for cat in categories:
+        fetch_targets.append({
+            "url": f"https://newsapi.org/v2/top-headlines?category={cat}&language=en&pageSize=100&page=1&apiKey={api_key}",
+            "type": f"Global {cat.capitalize()} Headlines"
+        })
 
-    # loop for each date
-    for target_date in date_list:
-        print(f"--- Fetching news for date: {target_date} ---")
+    # --- BUCKET 2: Country Specific (High Volume, 'Everything' Endpoint) ---
+    # We search for the country name + 'politics' to filter noise
+    for code, country_name in COUNTRY_QUERIES.items():
+        # Query: (China AND (politics OR economy OR military))
+        query = f'"{country_name}" AND (politics OR economy OR military)'
+        encoded_query = urllib.parse.quote(query)
         
-        # url for exact day
-        url = (
-            f"https://newsapi.org/v2/everything?"
-            f"sources={SOURCES}&"
-            f"from={target_date}&"
-            f"to={target_date}&"
-            f"pageSize=100&apiKey={api_key}"
-        )
+        fetch_targets.append({
+            "url": (
+                f"https://newsapi.org/v2/everything?"
+                f"q={encoded_query}&"
+                f"language=en&"
+                f"from={from_date}&"
+                f"sortBy=publishedAt&" # Get the newest stuff
+                f"pageSize=50&"        # Limit to 50 to save processing time
+                f"apiKey={api_key}"
+            ),
+            "type": f"Deep Dive: {country_name}"
+        })
+
+    print(f"--- PLAN GENERATED: {len(fetch_targets)} API Requests queued. ---")
+
+    # --- EXECUTION ---
+    all_articles = []
+    total_requests = len(fetch_targets)
+
+    for i, target in enumerate(fetch_targets):
+        print(f"\n[Request {i+1}/{total_requests}] Fetching {target['type']}...")
         
-        # get the articles via web response
-        response = requests.get(url)
-        data = response.json()
-        articles = data.get('articles', [])
-
-        # handling empty articles
-        if not articles:
-            print(f"No articles found for {target_date}. Skipping...")
-            continue
+        try:
+            response = requests.get(target['url'])
+            data = response.json()
             
-        # looping over articles
-        for art in articles:
-            article_url = art.get('url')
-
-            # generate unique article id from article url
-            article_id = hashlib.md5(str(article_url).encode()).hexdigest()[:16]
-            article_scraper = Article(article_url, config=user_config)
+            if data.get('status') == 'error':
+                print(f"  !! API Error: {data.get('message')}")
+                continue
+                
+            articles = data.get('articles', [])
+            if not articles:
+                print("  -> No articles returned for this target.")
+                continue
             
-            try:
-                article_scraper.download()
-                article_scraper.parse()
+            print(f"  -> API returned {len(articles)} articles. Processing...")
 
-                # scraping article text
-                full_text = article_scraper.text
+            new_count = 0
+            dup_count = 0
+            
+            for art in articles:
+                article_url = art.get('url')
+                if not article_url: continue
 
-                # checking if article blocked
-                if "consent" in full_text.lower() and len(full_text) < 500:
-                    full_text = "Blocked by Consent Wall"
+                # Generate ID
+                article_id = hashlib.md5(str(article_url).encode()).hexdigest()[:16]
 
-            # failed to retrieve article
-            except:
-                full_text = "Could not retrieve content"
+                # Check Duplicates (In-Memory)
+                if any(x['article_id'] == article_id for x in all_articles):
+                    dup_count += 1
+                    continue
 
-            # appending article data in json format
-            all_articles.append({
-                'article_id': article_id,
-                'source_name': art.get('source', {}).get('name'),
-                'author': art.get('author'),
-                'title': art.get('title'),
-                'url': article_url,
-                'full_content': full_text,
-                'published_at': art.get('publishedAt'),
-                'content_snippet': art.get('description'),
-                'extracted_at': datetime.now()
-            })
+                # Scrape Content
+                article_scraper = Article(article_url, config=user_config)
+                try:
+                    article_scraper.download()
+                    article_scraper.parse()
+                    full_text = article_scraper.text
+                    
+                    if "consent" in full_text.lower() and len(full_text) < 500:
+                        full_text = "Blocked by Consent Wall"
+                except:
+                    full_text = "Could not retrieve content"
 
-    # loading the articles
+                all_articles.append({
+                    'article_id': article_id,
+                    'source_name': art.get('source', {}).get('name'),
+                    'author': art.get('author'),
+                    'title': art.get('title'),
+                    'url': article_url,
+                    'full_content': full_text,
+                    'published_at': art.get('publishedAt'),
+                    'content_snippet': art.get('description'),
+                    'extracted_at': datetime.now()
+                })
+                new_count += 1
+            
+            print(f"  -> Scraped {new_count} new articles. (Skipped {dup_count} duplicates)")
+
+        except Exception as e:
+            print(f"  !! Critical Request Failure: {e}")
+
+    # --- DATABASE UPLOAD ---
     if all_articles:
-
-        # convert into df
+        print(f"\n--- PROCESSING COMPLETE. Preparing {len(all_articles)} articles for DB upload... ---")
+        
         df = pd.DataFrame(all_articles)
-
-        # ensuring columns are actual datatime type
         df['published_at'] = pd.to_datetime(df['published_at'])
         df['extracted_at'] = pd.to_datetime(df['extracted_at'])
-
-        # dropping duplicate articles
         df = df.drop_duplicates(subset=['article_id'])
         
-        # conencting to db
         engine = create_engine(db_uri)
 
-        # ensures that original table is created with a primary key
         setup_query = text("""
             CREATE TABLE IF NOT EXISTS news_articles (
                 article_id VARCHAR(16) PRIMARY KEY,
@@ -127,46 +175,45 @@ def fetch_news_with_pagination(**context):
             );
         """)
 
-        with engine.begin() as conn:
-            conn.execute(setup_query)
-        
-            # loading data into temporary staging table
-            df.to_sql('stg_news_articles', engine, if_exists='replace', index=False, method='multi', chunksize=100)
-        
-            # moving data into main news_articles table ignoring duplicates
-            upsert_query = text("""
-                INSERT INTO news_articles 
-                SELECT * FROM stg_news_articles
-                ON CONFLICT (article_id) DO NOTHING;
-            """)
-
-            conn.execute(upsert_query)
-
-            # dropping the staging table
-            conn.execute(text("DROP TABLE stg_news_articles;"))
+        try:
+            with engine.begin() as conn:
+                conn.execute(setup_query)
+                df.to_sql('stg_news_articles', engine, if_exists='replace', index=False, method='multi', chunksize=100)
+                
+                upsert_query = text("""
+                    INSERT INTO news_articles 
+                    SELECT * FROM stg_news_articles
+                    ON CONFLICT (article_id) DO NOTHING;
+                """)
+                conn.execute(upsert_query)
+                conn.execute(text("DROP TABLE stg_news_articles;"))
+                
+            print(f"--- SUCCESS: Ingestion complete. DB is up to date. ---")
             
-        print(f"Ingestion complete. Handled {len(df)} potential articles.")
+        except Exception as e:
+            print(f"!!! DATABASE ERROR: {e}")
+            raise
+    else:
+        print("No articles were found or scraped. Database upload skipped.")
 
 
-# DAG DEFINITION
+# --- DAG DEFINITION ---
 with DAG(
     dag_id='news_collector_v1',
     start_date=datetime(2024, 1, 1),
-    schedule='@daily', 
+    schedule=None, 
     catchup=False
 ) as dag:
 
     fetch_news = PythonOperator(
-        task_id='fetch_news_pages',
-        python_callable=fetch_news_with_pagination
+        task_id='fetch_stratified_news',
+        python_callable=fetch_stratified_news
     )
 
-    # triggering the silver layer code
     trigger_silver = TriggerDagRunOperator(
         task_id='trigger_silver_refinery',
         trigger_dag_id='data_refinery_v1',
-        wait_for_completion=False
+        wait_for_completion=False 
     )
-
 
     fetch_news >> trigger_silver
