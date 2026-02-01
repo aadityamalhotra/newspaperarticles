@@ -18,17 +18,17 @@ def prepare_silver_tables():
     # loading the data
     with engine.begin() as connection:
         
-        # loading data from news_articles for content table
+        # loading data from articles for content table
         content_df = pd.read_sql(text("""
             SELECT article_id, title, url, full_content as content
-            FROM news_articles
+            FROM articles
             WHERE full_content NOT LIKE 'Sorry%' AND length(full_content) >= 300
         """), connection)
 
-        # loading data from news_articles for content table
+        # loading data from articles for content table
         brief_df = pd.read_sql(text("""
             SELECT article_id, author, title, published_at as publication_time, content_snippet
-            FROM news_articles
+            FROM articles
             WHERE title NOT SIMILAR TO '[0-9]%'
         """), connection)
 
