@@ -19,6 +19,7 @@ DB_CONN_ID = 'my_postgres_conn'
 # We use explicit country names to search the 'everything' endpoint
 # This guarantees data even if the 'top-headlines' feed for that region is empty.
 COUNTRY_QUERIES = {
+    # Original 10
     'cn': 'China',
     'ru': 'Russia',
     'in': 'India',
@@ -28,7 +29,13 @@ COUNTRY_QUERIES = {
     'jp': 'Japan',
     'sa': 'Saudi Arabia',
     'ua': 'Ukraine',
-    'il': 'Israel'
+    'il': 'Israel',
+    # New 5 (High Geopolitical Relevance)
+    'ir': 'Iran',         # Middle East tension central
+    'tr': 'Turkey',       # NATO/East-West bridge
+    'br': 'Brazil',       # BRICS major player
+    'kr': 'South Korea',  # Tech & North Korea tension
+    'tw': 'Taiwan'        # US-China flashpoint
 }
 
 def fetch_stratified_news(**context):
@@ -54,7 +61,7 @@ def fetch_stratified_news(**context):
     fetch_targets = []
     
     # --- BUCKET 1: Global Headlines (High Quality, Low Volume) ---
-    categories = ['general', 'business', 'technology']
+    categories = ['general', 'business', 'technology', 'science', 'health']
     for cat in categories:
         fetch_targets.append({
             "url": f"https://newsapi.org/v2/top-headlines?category={cat}&language=en&pageSize=100&page=1&apiKey={api_key}",
@@ -162,7 +169,7 @@ def fetch_stratified_news(**context):
         engine = create_engine(db_uri)
 
         setup_query = text("""
-            CREATE TABLE IF NOT EXISTS news_articles (
+            CREATE TABLE IF NOT EXISTS articles (
                 article_id VARCHAR(16) PRIMARY KEY,
                 source_name TEXT,
                 author TEXT,
@@ -181,7 +188,7 @@ def fetch_stratified_news(**context):
                 df.to_sql('stg_news_articles', engine, if_exists='replace', index=False, method='multi', chunksize=100)
                 
                 upsert_query = text("""
-                    INSERT INTO news_articles 
+                    INSERT INTO articles 
                     SELECT * FROM stg_news_articles
                     ON CONFLICT (article_id) DO NOTHING;
                 """)
