@@ -1,11 +1,26 @@
-# Astro Runtime includes the following pre-installed providers packages: https://www.astronomer.io/docs/astro/runtime-image-architecture#provider-packages
-pyspark
+# --- Core Orchestration & Data ---
 apache-airflow-providers-postgres
-newspaper4k
-lxml_html_clean
 pandas
 sqlalchemy
 requests
 psycopg2-binary
+lxml_html_clean
+
+# --- Scraping ---
+newspaper4k
+
+# --- NLP & Machine Learning (For 3D Visualization) ---
+sentence-transformers
+umap-learn
+scikit-learn
+numpy
+
+# --- Visualization ---
+plotly
+
+# --- Spacy & Existing Models ---
 spacy==3.7.5
 https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.7.1/en_core_web_md-3.7.1-py3-none-any.whl
+
+# --- Big Data (If you are using Spark elsewhere) ---
+pyspark

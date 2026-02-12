@@ -4,58 +4,68 @@ from sqlalchemy import create_engine
 from sentence_transformers import SentenceTransformer
 import umap
 import plotly.express as px
-from airflow.sdk import Variable
+from airflow import DAG
+from airflow.operators.python import PythonOperator
 from airflow.sdk.bases.hook import BaseHook
-from newspaper import Article, Config
+from datetime import datetime
+import os
 
-# 1. DATABASE CONNECTION
-api_key = Variable.get("newsroom_api_key")
-conn = BaseHook.get_connection(DB_CONN_ID)
+# --- CONFIGURATION ---
 DB_CONN_ID = 'my_postgres_conn'
-DB_URI = conn.get_uri().replace("postgres://", "postgresql://", 1) # Update with your credentials
-engine = create_engine(DB_URI)
 
-def visualize_articles():
-    # Load data from the main_table created by your Airflow DAG
-    query = "SELECT title, full_content, source_name, url FROM main_table"
+def generate_3d_map(**context):
+    # 1. DATABASE CONNECTION (Now works because it's in a DAG)
+    conn = BaseHook.get_connection(DB_CONN_ID)
+    db_uri = conn.get_uri().replace("postgres://", "postgresql://", 1)
+    engine = create_engine(db_uri)
+    
+    # 2. FETCH DATA
+    query = "SELECT title, full_content, source_name FROM filtered_main_table"
     df = pd.read_sql(query, engine)
     
-    # Clean data: Combine title and content for better context
-    df['text_for_embedding'] = df['title'] + " " + df['full_content'].str.slice(0, 500)
-    df = df.dropna(subset=['text_for_embedding'])
+    if df.empty:
+        print("No articles found!")
+        return
 
-    # 2. GENERATE EMBEDDINGS (AI Logic)
-    # Using a lightweight, high-performance model
-    print("Generating embeddings... this may take a moment.")
+    # 3. PREPROCESS
+    df['full_content'] = df['full_content'].fillna('')
+    df['text_for_embedding'] = df['title'] + " " + df['full_content'].str.slice(0, 500)
+    
+    # 4. AI EMBEDDINGS
+    print("Encoding articles...")
     model = SentenceTransformer('all-MiniLM-L6-v2')
     embeddings = model.encode(df['text_for_embedding'].tolist(), show_progress_bar=True)
 
-    # 3. DIMENSIONALITY REDUCTION (3D)
-    # UMAP is excellent for preserving local and global structures in 3D
+    # 5. UMAP REDUCTION
+    print("Reducing to 3D...")
     reducer = umap.UMAP(n_components=3, n_neighbors=15, min_dist=0.1, random_state=42)
     projections = reducer.fit_transform(embeddings)
+    df['x'], df['y'], df['z'] = projections[:, 0], projections[:, 1], projections[:, 2]
 
-    # Add coordinates back to dataframe
-    df['x'] = projections[:, 0]
-    df['y'] = projections[:, 1]
-    df['z'] = projections[:, 2]
-
-    # 4. INTERACTIVE 3D PLOT
+    # 6. SAVE TO HTML
+    # We save to the /dags folder so it appears on your Mac
     fig = px.scatter_3d(
         df, x='x', y='y', z='z',
         color='source_name',
         hover_name='title',
-        hover_data=['source_name'],
-        title='Global News Topography (3D Semantic Map)',
-        labels={'x': 'Semantic Axis 1', 'y': 'Semantic Axis 2', 'z': 'Semantic Axis 3'},
-        opacity=0.7
+        title='Global News Semantic Map (3D)',
+        template='plotly_dark'
     )
-
-    # Improve layout
-    fig.update_traces(marker=dict(size=4))
-    fig.update_layout(margin=dict(l=0, r=0, b=0, t=40))
     
-    fig.show()
+    dag_folder = os.path.dirname(__file__)  # Gets the directory of the current script
+    output_path = os.path.join(dag_folder, "news_map.html")
+    fig.write_html(output_path)
+    print(f"Success! Map saved to {output_path}")
 
-if __name__ == "__main__":
-    visualize_articles()
+# --- DAG DEFINITION ---
+with DAG(
+    dag_id='visualize_news_3d',
+    start_date=datetime(2024, 1, 1),
+    schedule=None, # Triggered manually or by the other DAG
+    catchup=False
+) as dag:
+
+    visualize_task = PythonOperator(
+        task_id='generate_3d_map',
+        python_callable=generate_3d_map
+    )
