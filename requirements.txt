@@ -5,9 +5,12 @@ sqlalchemy
 requests
 psycopg2-binary
 lxml_html_clean
+pendulum
 
 # --- Scraping ---
 newspaper4k
+trafilatura
+newsapi-python
 
 # --- NLP & Machine Learning (For 3D Visualization) ---
 sentence-transformers
