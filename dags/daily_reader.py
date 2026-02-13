@@ -18,24 +18,15 @@ from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOpe
 LOCAL_TZ = "America/Chicago"
 
 # 2. SOURCE LIST
-SOURCES_LIST = ['abc-news', 'abc-news-au', 'al-jazeera-english', 'ars-technica', 
-                'associated-press', 'australian-financial-review', 'axios', 'bbc-news', 
-                'bbc-sport', 'bleacher-report', 'bloomberg', 'breitbart-news', 
-                'business-insider', 'buzzfeed', 'cbc-news', 'cbs-news', 'cnn', 
-                'crypto-coins-news', 'engadget', 'entertainment-weekly', 'espn', 
-                'espn-cric-info', 'financial-post', 'football-italia', 'fortune', 
-                'four-four-two', 'fox-news', 'fox-sports', 'google-news', 'google-news-au',
-                'google-news-ca', 'google-news-in', 'google-news-uk', 'hacker-news', 
-                'ign', 'independent', 'mashable', 'medical-news-today', 'msnbc', 'mtv-news', 
-                'mtv-news-uk', 'national-geographic', 'national-review', 'nbc-news', 
-                'news24', 'new-scientist', 'news-com-au', 'newsweek', 'new-york-magazine', 
-                'next-big-future', 'nfl-news', 'nhl-news', 'politico', 'polygon', 'recode', 
-                'reddit-r-all', 'reuters', 'rte', 'talksport', 'techcrunch', 'techradar', 
-                'the-american-conservative', 'the-globe-and-mail', 'the-hill', 'the-hindu', 
-                'the-huffington-post', 'the-irish-times', 'the-jerusalem-post', 
-                'the-lad-bible', 'the-next-web', 'the-sport-bible', 'the-times-of-india', 
-                'the-verge', 'the-wall-street-journal', 'the-washington-post', 
-                'the-washington-times', 'time', 'usa-today', 'vice-news', 'wired']
+SOURCES_LIST = ['abc-news-au', 'al-jazeera-english',
+                'associated-press', 'bbc-news', 
+                'breitbart-news', 
+                'business-insider', 'buzzfeed', 'cbc-news', 'cbs-news', 'financial-post', 'fortune', 
+                'fox-news', 'fox-sports', 'hacker-news', 
+                'nbc-news', 
+                 'rte',  'techradar', 
+                'the-times-of-india', 
+                'the-verge', 'usa-today']
 
 def get_browser_config():
     config = newspaper.Config()
