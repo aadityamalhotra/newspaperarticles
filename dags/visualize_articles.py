@@ -20,7 +20,7 @@ def generate_3d_map(**context):
     engine = create_engine(db_uri)
     
     # 2. FETCH DATA
-    query = "SELECT title, full_content, source_name FROM filtered_main_table"
+    query = "SELECT title, full_content, source_name FROM article_data"
     df = pd.read_sql(query, engine)
     
     if df.empty:
