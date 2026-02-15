@@ -9,24 +9,28 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator # Updated import
 from airflow.models import Variable
 from airflow.sdk.bases.hook import BaseHook
-from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 
 # 1. SETUP & TIMEZONE
 LOCAL_TZ = "America/Chicago"
 
-# 2. SOURCE LIST
-SOURCES_LIST = ['abc-news-au', 'al-jazeera-english',
-                'associated-press', 'bbc-news', 
-                'breitbart-news', 
-                'business-insider', 'buzzfeed', 'cbc-news', 'cbs-news', 'financial-post', 'fortune', 
-                'fox-news', 'fox-sports', 'hacker-news', 
-                'nbc-news', 
-                 'rte',  'techradar', 
-                'the-times-of-india', 
-                'the-verge', 'usa-today']
+# 2. SOURCE CONFIGURATION
+# Sources categorized by page limits as requested
+SOURCE_PAGINATION = {
+    'abc-news-au': 2, 'cbc-news': 2,
+    'cbs-news': 5, 'financial-post': 5, 'fox-news': 5, 'usa-today': 5
+}
+
+# The remaining 14 sources (Defaults to 1 page)
+SOURCES_LIST = [
+    'abc-news-au', 'al-jazeera-english', 'associated-press', 'bbc-news', 
+    'breitbart-news', 'business-insider', 'buzzfeed', 'cbc-news', 
+    'cbs-news', 'financial-post', 'fortune', 'fox-news', 'fox-sports', 
+    'hacker-news', 'nbc-news', 'rte', 'techradar', 'the-times-of-india', 
+    'the-verge', 'usa-today'
+]
 
 def get_browser_config():
     config = newspaper.Config()
@@ -40,7 +44,6 @@ def get_browser_config():
     return config
 
 def fetch_and_store_news(**context):
-    # Retrieve configuration using BaseHook
     api_key = Variable.get("newsroom_api_key")
     db_conn_id = 'my_postgres_conn'
     
@@ -48,89 +51,97 @@ def fetch_and_store_news(**context):
     db_uri = conn.get_uri().replace("postgres://", "postgresql://", 1)
     engine = create_engine(db_uri)
     
-    # Calculate target date (yesterday)
     target_date = pendulum.now(LOCAL_TZ).subtract(days=1).to_date_string()
     user_config = get_browser_config()
 
     for source in SOURCES_LIST:
-        print(f"--- Processing Source: {source} ---")
+        # Determine how many pages to fetch (default is 1)
+        max_pages = SOURCE_PAGINATION.get(source, 1)
+        print(f"--- Processing Source: {source} (Max Pages: {max_pages}) ---")
         
-        api_url = "https://newsapi.org/v2/everything"
-        params = {
-            'sources': source,
-            'from': target_date,
-            'to': target_date,
-            'sortBy': 'popularity',
-            'pageSize': 100,
-            'apiKey': api_key
-        }
-        
-        try:
-            response = requests.get(api_url, params=params)
-            res = response.json()
-            if res.get('status') != 'ok':
-                print(f"Error for {source}: {res.get('message')}")
-                continue
+        batch_data = []
+
+        for page in range(1, max_pages + 1):
+            print(f"Fetching page {page} for {source}...")
+            api_url = "https://newsapi.org/v2/everything"
+            params = {
+                'sources': source,
+                'from': target_date,
+                'to': target_date,
+                'sortBy': 'popularity',
+                'pageSize': 100,
+                'page': page,
+                'apiKey': api_key
+            }
+            
+            try:
+                response = requests.get(api_url, params=params)
+                res = response.json()
                 
-            articles = res.get('articles', [])
-            batch_data = []
-
-            for art in articles:
-                print(f'Reading article: {art["title"]}')
-                article_url = art.get('url')
-                if not article_url: continue
-
-                try:
-                    article_id = hashlib.md5(str(article_url).encode()).hexdigest()[:16]
-                    source_name = art.get('source', {}).get('name', 'unknown')
-                    safe_source_name = str(source_name).strip().lower()
-                    source_id_hash = hashlib.md5(safe_source_name.encode()).hexdigest()[:16]
-
-                    time.sleep(random.uniform(1.0, 2.0)) # Stealth delay
+                if res.get('status') != 'ok':
+                    print(f"Error/Limit reached for {source} at page {page}: {res.get('message')}")
+                    break # Stop pagination for this source
                     
-                    scraper = newspaper.Article(article_url, config=user_config)
-                    scraper.download()
-                    scraper.parse()
-                    
-                    full_text = scraper.text or ""
+                articles = res.get('articles', [])
+                if not articles:
+                    print(f"No more articles found for {source} at page {page}.")
+                    break # Exit page loop if no articles found
 
-                    if full_text and "consent" in full_text.lower() and len(full_text) < 500:
-                        full_text = "Blocked by Consent Wall"
+                for art in articles:
+                    print(f'Reading: {art["title"]}')
+                    article_url = art.get('url')
+                    if not article_url or "[Removed]" in art['title']: continue
 
-                    batch_data.append({
-                        'article_id': article_id,
-                        'source_id': source_id_hash,
-                        'source_name': source_name,
-                        'author': ", ".join(scraper.authors) if scraper.authors else art.get('author'),
-                        'title': art['title'],
-                        'url': article_url,
-                        'full_content': full_text,
-                        'publish_date': art.get('publishedAt')
-                    })
-                    
-                except Exception as e:
-                    print(f"  !! Skipping {article_url}: {e}")
-                    continue
+                    try:
+                        article_id = hashlib.md5(str(article_url).encode()).hexdigest()[:16]
+                        source_name = art.get('source', {}).get('name', 'unknown')
+                        
+                        # Stealth delay to avoid 403s during scrape
+                        time.sleep(random.uniform(0.8, 1.5))
+                        
+                        scraper = newspaper.Article(article_url, config=user_config)
+                        scraper.download()
+                        scraper.parse()
+                        
+                        full_text = scraper.text or ""
+                        if full_text and "consent" in full_text.lower() and len(full_text) < 500:
+                            full_text = "Blocked by Consent Wall"
 
-            if batch_data:
-                df = pd.DataFrame(batch_data)
-                df['publish_date'] = pd.to_datetime(df['publish_date']).dt.date
-                
-                with engine.begin() as sql_conn:
-                    df.to_sql('stg_news_articles', sql_conn, if_exists='replace', index=False)
-                    sql_conn.execute(text("""
-                        INSERT INTO article_data (article_id, source_id, source_name, author, title, url, full_content, publish_date)
-                        SELECT article_id, source_id, source_name, author, title, url, full_content, publish_date
-                        FROM stg_news_articles
-                        ON CONFLICT DO NOTHING;
-                    """))
-                    sql_conn.execute(text("DROP TABLE stg_news_articles;"))
-                print(f"--- Saved {len(batch_data)} articles for {source} ---")
+                        batch_data.append({
+                            'article_id': article_id,
+                            'source_id': hashlib.md5(str(source_name).strip().lower().encode()).hexdigest()[:16],
+                            'source_name': source_name,
+                            'author': ", ".join(scraper.authors) if scraper.authors else art.get('author'),
+                            'title': art['title'],
+                            'url': article_url,
+                            'full_content': full_text,
+                            'publish_date': art.get('publishedAt')
+                        })
+                    except Exception as e:
+                        print(f"  !! Skipping {article_url}: {e}")
+                        continue
 
-        except Exception as e:
-            print(f"Critical API Error for {source}: {e}")
+            except Exception as api_err:
+                print(f"API Connection Error for {source}: {api_err}")
+                break
 
-# --- DAG DEFINITION (Aligned with your working example) ---
+        # Database Insertion after all pages for the source are collected
+        if batch_data:
+            df = pd.DataFrame(batch_data)
+            df['publish_date'] = pd.to_datetime(df['publish_date']).dt.date
+            
+            with engine.begin() as sql_conn:
+                df.to_sql('stg_news_articles', sql_conn, if_exists='replace', index=False)
+                sql_conn.execute(text("""
+                    INSERT INTO article_data (article_id, source_id, source_name, author, title, url, full_content, publish_date)
+                    SELECT article_id, source_id, source_name, author, title, url, full_content, publish_date
+                    FROM stg_news_articles
+                    ON CONFLICT DO NOTHING;
+                """))
+                sql_conn.execute(text("DROP TABLE stg_news_articles;"))
+            print(f"--- Successfully stored {len(batch_data)} total articles for {source} ---")
+
+# --- DAG DEFINITION ---
 with DAG(
     dag_id='news_ingestion_v2', 
     start_date=datetime(2024, 1, 1), 
